@@ -7,6 +7,7 @@ from tokenizer import SMILESTokenizer
 from dataset import SMILESDataset
 from tnn import TNN
 from trainer import SMILESTrainer
+from torch.cuda.amp import autocast, GradScaler
 
 
 def main(args):
@@ -23,18 +24,22 @@ def main(args):
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
-    # Create dataloaders
+    # Create dataloaders with optimized settings
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=Global.BATCH_SIZE,
         shuffle=True,
-        num_workers=8
+        num_workers=4,  # Reduced from 8
+        pin_memory=True,  # Enable pin memory for faster GPU transfer
+        persistent_workers=True  # Keep workers alive between epochs
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=Global.BATCH_SIZE,
         shuffle=False,
-        num_workers=8
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True
     )
     
     # Initialize model
@@ -45,14 +50,14 @@ def main(args):
         nheads=8
     )
     
-    # Initialize trainer
+    # Initialize trainer with gradient accumulation
     trainer = SMILESTrainer(
         model=model,
         tokenizer=tokenizer,
-        device="cuda" if torch.cuda.is_available() else "cpu"
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        gradient_accumulation_steps=4  # Accumulate gradients for 4 steps
     )
 
-    
     # Create checkpoint directory
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     

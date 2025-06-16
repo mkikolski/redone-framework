@@ -1,5 +1,6 @@
 import torch
 from torch import nn, Tensor
+from torch.utils.checkpoint import checkpoint
 
 from embedding import SinEmbedding
 
@@ -42,6 +43,7 @@ class TNN(nn.Module):
         ])
 
         self.fc = nn.Linear(hidden_size, n_embeddings)
+        self.use_checkpointing = True  # Enable gradient checkpointing by default
 
     def forward(self, x: Tensor) -> Tensor:
         padding_mask = x == 0
@@ -53,6 +55,10 @@ class TNN(nn.Module):
         embeddings = input_embeddings + positional
 
         for layer in self.layers:
-            embeddings = layer(embeddings, mask=padding_mask)
+            if self.use_checkpointing and self.training:
+                # Use gradient checkpointing during training
+                embeddings = checkpoint(layer, embeddings, padding_mask)
+            else:
+                embeddings = layer(embeddings, mask=padding_mask)
 
         return self.fc(embeddings)

@@ -5,6 +5,7 @@ from typing import List, Optional, Dict
 import numpy as np
 from tqdm import tqdm
 import os
+from torch.cuda.amp import autocast, GradScaler
 
 from tnn import TNN
 from tokenizer import SMILESTokenizer
@@ -16,7 +17,8 @@ class SMILESTrainer:
         self,
         model: TNN,
         tokenizer: SMILESTokenizer,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        gradient_accumulation_steps: int = 1
     ):
         self.model = model.to(device)
         self.tokenizer = tokenizer
@@ -25,6 +27,8 @@ class SMILESTrainer:
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
         self.current_epoch = 0
         self.best_loss = float('inf')
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.scaler = GradScaler()  # For mixed precision training
 
     def save_checkpoint(self, save_path: str, is_best: bool = False) -> None:
         """Save model checkpoint including optimizer state and training progress."""
@@ -33,6 +37,7 @@ class SMILESTrainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'best_loss': self.best_loss,
+            'scaler_state_dict': self.scaler.state_dict(),
             'tokenizer_state': {
                 'token2idx': self.tokenizer.token2idx,
                 'idx2token': self.tokenizer.idx2token,
@@ -56,6 +61,8 @@ class SMILESTrainer:
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.current_epoch = checkpoint['epoch']
         self.best_loss = checkpoint['best_loss']
+        if 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         
         # Restore tokenizer state if needed
         tokenizer_state = checkpoint['tokenizer_state']
@@ -67,25 +74,35 @@ class SMILESTrainer:
         """Train for one epoch and return average loss."""
         self.model.train()
         total_loss = 0
+        self.optimizer.zero_grad()
         
         for batch_idx, (input_ids, target_ids) in enumerate(tqdm(dataloader)):
             input_ids = input_ids.to(self.device)
             target_ids = target_ids.to(self.device)
             
-            self.optimizer.zero_grad()
-            outputs = self.model(input_ids)
+            # Mixed precision training
+            with autocast():
+                outputs = self.model(input_ids)
+                loss = self.criterion(
+                    outputs.view(-1, outputs.size(-1)),
+                    target_ids.view(-1)
+                )
+                loss = loss / self.gradient_accumulation_steps
             
-            # Reshape for cross entropy
-            loss = self.criterion(
-                outputs.view(-1, outputs.size(-1)),
-                target_ids.view(-1)
-            )
+            # Scale loss and backpropagate
+            self.scaler.scale(loss).backward()
             
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
+            if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                # Unscale gradients for clipping
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                
+                # Update weights
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad()
             
-            total_loss += loss.item()
+            total_loss += loss.item() * self.gradient_accumulation_steps
             
         return total_loss / len(dataloader)
 
@@ -106,8 +123,9 @@ class SMILESTrainer:
             current_ids = torch.tensor([[self.tokenizer.token2idx[self.tokenizer.START_token]]], device=self.device)
             
             for _ in range(max_length):
-                outputs = self.model(current_ids)
-                next_token_logits = outputs[:, -1, :] / temperature
+                with autocast():
+                    outputs = self.model(current_ids)
+                    next_token_logits = outputs[:, -1, :] / temperature
                 
                 if top_k is not None:
                     indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
@@ -183,11 +201,12 @@ class SMILESTrainer:
             input_ids = input_ids.to(self.device)
             target_ids = target_ids.to(self.device)
             
-            outputs = self.model(input_ids)
-            loss = self.criterion(
-                outputs.view(-1, outputs.size(-1)),
-                target_ids.view(-1)
-            )
+            with autocast():
+                outputs = self.model(input_ids)
+                loss = self.criterion(
+                    outputs.view(-1, outputs.size(-1)),
+                    target_ids.view(-1)
+                )
             total_loss += loss.item()
             
         return total_loss / len(dataloader) 
