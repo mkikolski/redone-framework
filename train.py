@@ -10,6 +10,8 @@ from trainer import SMILESTrainer
 
 
 def main(args):
+    print(torch.cuda.is_available())
+
     # Initialize tokenizer
     tokenizer = SMILESTokenizer()
     
@@ -26,13 +28,13 @@ def main(args):
         train_dataset,
         batch_size=Global.BATCH_SIZE,
         shuffle=True,
-        num_workers=4
+        num_workers=8
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=Global.BATCH_SIZE,
         shuffle=False,
-        num_workers=4
+        num_workers=8
     )
     
     # Initialize model
@@ -49,6 +51,7 @@ def main(args):
         tokenizer=tokenizer,
         device="cuda" if torch.cuda.is_available() else "cpu"
     )
+
     
     # Create checkpoint directory
     os.makedirs(args.checkpoint_dir, exist_ok=True)

@@ -6,7 +6,7 @@ import numpy as np
 class SinEmbedding(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        self.sz = dim
+        self.dim = dim
 
     def forward(self, x: Tensor) -> Tensor:
         embedding = np.log(10000) / (self.dim // 2 - 1)

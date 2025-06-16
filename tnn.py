@@ -23,7 +23,7 @@ class DecoderOnlyBlock(nn.Module):
         ss_mask = torch.triu(torch.ones(sz, sz, device=x.device), sz).bool()
 
         norm = self.input_norm(x)
-        x = self.mha(norm, norm, norm, attn_mask=mask, key_padding_mask=ss_mask)[0] + x
+        x = self.mha(norm, norm, norm, attn_mask=ss_mask, key_padding_mask=mask)[0] + x
         norm = self.output_norm(x)
 
         x = self.mlp(norm) + x
@@ -53,6 +53,6 @@ class TNN(nn.Module):
         embeddings = input_embeddings + positional
 
         for layer in self.layers:
-            embeddings = layer(embeddings, padding_mask=padding_mask)
+            embeddings = layer(embeddings, mask=padding_mask)
 
         return self.fc(embeddings)
