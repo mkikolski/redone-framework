@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import Dataset
 import os
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 from tokenizer import SMILESTokenizer
 from globals import Global
 
@@ -14,8 +14,10 @@ class SMILESDataset(Dataset):
         self.file_paths = []
         self.sequence_offsets = []  # List of (file_idx, start_idx, end_idx) tuples
         self.total_sequences = 0
+        self.sequence_cache = {}  # Cache for file sequences
         
         self.__index_files()
+        print(f"Dataset initialized with {self.total_sequences} total sequences across {len(self.file_paths)} files")
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         if idx < 0 or idx >= self.total_sequences:
@@ -29,25 +31,35 @@ class SMILESDataset(Dataset):
         if file_idx >= len(self.sequence_offsets):
             raise IndexError(f"Index {idx} not found in any file")
             
-        # Calculate offset within the file
+        # Get file info
         file_path = self.file_paths[file_idx]
         start_idx = self.sequence_offsets[file_idx][1]
         target_idx = idx - start_idx
         
-        # Read the specific line
-        with open(file_path, 'r') as f:
-            for i, line in enumerate(f):
-                if i == target_idx:
-                    smiles = line.strip()
-                    if 3 <= len(smiles) <= self.max_length:
-                        tensor = self.tokenizer.encode(smiles, self.max_length)
-                        return tensor[:-1], tensor[1:]
-                    break
-                    
-        raise IndexError(f"Could not find valid sequence at index {idx}")
+        # Get sequences for this file (from cache or load)
+        if file_path not in self.sequence_cache:
+            self.sequence_cache[file_path] = self.__load_file_sequences(file_path)
+        
+        sequences = self.sequence_cache[file_path]
+        if target_idx >= len(sequences):
+            raise IndexError(f"Target index {target_idx} out of range for file {file_path} (has {len(sequences)} sequences)")
+            
+        smiles = sequences[target_idx]
+        tensor = self.tokenizer.encode(smiles, self.max_length)
+        return tensor[:-1], tensor[1:]
 
     def __len__(self) -> int:
         return self.total_sequences
+
+    def __load_file_sequences(self, file_path: str) -> List[str]:
+        """Load all valid sequences from a file."""
+        sequences = []
+        with open(file_path, 'r') as f:
+            for line in f:
+                smiles = line.strip()
+                if 3 <= len(smiles) <= self.max_length:
+                    sequences.append(smiles)
+        return sequences
 
     def __index_files(self):
         """Index all files and their sequences without loading them into memory."""
@@ -57,19 +69,16 @@ class SMILESDataset(Dataset):
             if not os.path.isfile(file_path):
                 continue
                 
-            # Count sequences in this file
-            valid_sequences = 0
-            with open(file_path, 'r') as f:
-                for line in f:
-                    smiles = line.strip()
-                    if 3 <= len(smiles) <= self.max_length:
-                        valid_sequences += 1
+            # Load and count sequences in this file
+            sequences = self.__load_file_sequences(file_path)
+            valid_sequences = len(sequences)
                         
             if valid_sequences > 0:
                 self.file_paths.append(file_path)
                 self.sequence_offsets.append((len(self.file_paths) - 1, current_idx, current_idx + valid_sequences))
                 current_idx += valid_sequences
                 self.total_sequences += valid_sequences
+                print(f"Indexed file {fp}: {valid_sequences} sequences (total: {self.total_sequences})")
 
     def get_vocab_size(self) -> int:
         """Return vocabulary size from tokenizer."""
